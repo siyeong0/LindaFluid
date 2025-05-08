@@ -35,7 +35,6 @@ namespace Linda.Fluid
 		[HideInInspector] public ComputeBuffer devicePositionBuffer;
 		[HideInInspector] public ComputeBuffer devicePredictedPositionBuffer;
 		[HideInInspector] public ComputeBuffer deviceVelocityBuffer;
-		[HideInInspector] public ComputeBuffer deviceDensityBuffer;
 
 		[HideInInspector] public ComputeBuffer deviceSpatialEntryBuffer;
 		[HideInInspector] public ComputeBuffer deviceSpatialOffsetBuffer;
@@ -61,7 +60,6 @@ namespace Linda.Fluid
 			devicePositionBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
 			devicePredictedPositionBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
 			deviceVelocityBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
-			deviceDensityBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
 
 			deviceSpatialEntryBuffer = new ComputeBuffer(numEntries, sizeof(uint) * 3);
 			deviceSpatialOffsetBuffer = new ComputeBuffer(numEntries, sizeof(uint));

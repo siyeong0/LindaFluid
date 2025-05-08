@@ -1,6 +1,4 @@
-﻿using System.Linq;
-using System.Runtime.InteropServices;
-using Unity.Mathematics;
+﻿using Unity.Mathematics;
 using UnityEngine;
 
 namespace Linda.Fluid
@@ -18,6 +16,9 @@ namespace Linda.Fluid
 		int applyViscocityForcesKernel;
 		int updatePositionsKernel;
 
+		// compute buffer
+		 ComputeBuffer deviceDensityBuffer;
+
 		public override void Initialize()
 		{
 			base.Initialize();
@@ -32,6 +33,9 @@ namespace Linda.Fluid
 			applyPressureForcesKernel = simulationComputeShader.FindKernel("ApplyPressureForces");
 			applyViscocityForcesKernel = simulationComputeShader.FindKernel("ApplyViscocityForces");
 			updatePositionsKernel = simulationComputeShader.FindKernel("UpdatePositions");
+
+			// init compute buffers
+			deviceDensityBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
 
 			// set compute shader buffers
 			simulationComputeShader.SetBuffer(applyExternalForcesKernel, "positionBuffer", devicePositionBuffer);
