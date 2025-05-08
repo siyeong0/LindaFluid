@@ -1,0 +1,430 @@
+#include "../Common/FluidMath.hlsl"
+#include "../Common/SpatialGrid.hlsl"
+
+#pragma kernel ApplyExternalForces
+#pragma kernel UpdateSpatialEntries
+#pragma kernel UpdateSpatialOffsets
+#pragma kernel Sort
+#pragma kernel UpdateDensities
+#pragma kernel RelaxPositions
+#pragma kernel ApplyPressureForces
+#pragma kernel ApplyViscocityForces
+#pragma kernel UpdatePositions;
+
+float deltaTime;
+float predictDeltaTime;
+
+float interactionRadius;
+float targetDensity;
+float pressureStiffness;
+float nearPressureStiffness;
+float viscosityStrength;
+float relaxRadius;
+float relaxStiffness;
+float collisionDamping;
+float2 gravity;
+float4 bounds;
+
+float inputControlRadius;
+float2 inputPosition;
+float inputStrength;
+
+uint numParticles;
+RWStructuredBuffer<float2> positionBuffer;
+RWStructuredBuffer<float2> predictedPositionBuffer;
+RWStructuredBuffer<float2> velocityBuffer;
+RWStructuredBuffer<float2> densityBuffer;
+
+uint numEntries;
+RWStructuredBuffer<uint3> spatialEntryBuffer; // (index, hash, key)
+RWStructuredBuffer<uint> spatialOffsetBuffer;
+
+uint numColliderPolygons;
+RWStructuredBuffer<float2> colliderPolygonPointBuffer;
+RWStructuredBuffer<uint> colliderPolygonOffsetBuffer;
+
+float calcPressureFormDensity(float density)
+{
+	return pressureStiffness * (density - targetDensity);
+}
+
+float calcNearPressureFormDensity(float nearDensity)
+{
+	return nearPressureStiffness * nearDensity;
+}
+
+[numthreads(1024, 1, 1)]
+void ApplyExternalForces(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= numParticles)
+		return;
+	
+	// calc external forces
+	float2 externalForce = gravity;
+	if (inputStrength != 0)
+	{
+		float2 offset = inputPosition - positionBuffer[id.x];
+		float dist = length(offset);
+		if (dist < inputControlRadius && dist > EPSILON)
+		{
+			float2 dir = offset / dist;
+			float centerT = 1.0f - dist / inputControlRadius;
+			float gravityWeight = 1 - (centerT * saturate(inputStrength / 10));
+			
+			externalForce = gravity * gravityWeight + centerT * (dir * inputStrength - velocityBuffer[id.x]);
+		}
+	}
+	
+	// apply external force
+	velocityBuffer[id.x] += externalForce * deltaTime;
+	// update predcited position
+	predictedPositionBuffer[id.x] = positionBuffer[id.x] + velocityBuffer[id.x] * predictDeltaTime;
+}
+
+[numthreads(1024, 1, 1)]
+void UpdateSpatialEntries(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= numParticles)
+		return;
+	
+	spatialOffsetBuffer[id.x] = numEntries;
+	
+	uint index = id.x;
+	int2 cellPos = getCellCoordFromPosition(predictedPositionBuffer[id.x], interactionRadius);
+	uint hash = getHashFromCellPos(cellPos);
+	uint key = getKeyFromHash(hash, numEntries);
+	spatialEntryBuffer[id.x] = uint3(index, hash, key);
+}
+
+const uint k;
+const uint j;
+
+[numthreads(256, 1, 1)]
+void Sort(uint3 id : SV_DispatchThreadID)
+{
+	uint i = id.x;
+	
+	uint l = i ^ j;
+	if (l > i)
+	{
+		if (((i & k) == 0) && (spatialEntryBuffer[i].z > spatialEntryBuffer[l].z) ||
+			((i & k) != 0) && (spatialEntryBuffer[i].z < spatialEntryBuffer[l].z))
+		{
+			uint3 t = spatialEntryBuffer[i];
+			spatialEntryBuffer[i] = spatialEntryBuffer[l];
+			spatialEntryBuffer[l] = t;
+		}
+
+	}
+}
+
+[numthreads(1024, 1, 1)]
+void UpdateSpatialOffsets(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= numParticles)
+		return;
+
+	uint i = id.x;
+	uint null = numEntries;
+
+	uint key = spatialEntryBuffer[i].z;
+	uint keyPrev = i == 0 ? null : spatialEntryBuffer[i - 1].z;
+
+	if (key != keyPrev)
+	{
+		spatialOffsetBuffer[key] = i;
+	}
+}
+
+[numthreads(1024, 1, 1)]
+void UpdateDensities(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= numParticles)
+		return;
+	
+	float2 originPos = predictedPositionBuffer[id.x];
+	int2 originCell = getCellCoordFromPosition(originPos, interactionRadius);
+	
+	float sqrRadius = interactionRadius * interactionRadius;
+	
+	float density = 0.0;
+	float nearDensity = 0.0;
+	for (int i = 0; i < 9; ++i)
+	{
+		uint hash = getHashFromCellPos(originCell + SPATIAL_OFFSETS[i]);
+		uint key = getKeyFromHash(hash, numEntries);
+		uint currIndex = spatialOffsetBuffer[key];
+		
+		while (currIndex < numParticles)
+		{
+			uint3 indexData = spatialEntryBuffer[currIndex++];
+			if (indexData.z != key)
+				break;
+			if (indexData.y != hash)
+				continue;
+			
+			uint neighborIndex = indexData.x;
+			float2 neighborPos = predictedPositionBuffer[neighborIndex];
+			float2 offsetToNeighbor = neighborPos - originPos;
+			float sqrDistToNeighbor = dot(offsetToNeighbor, offsetToNeighbor);
+			
+			if (sqrDistToNeighbor > sqrRadius)
+				continue;
+
+			float dist = sqrt(sqrDistToNeighbor);
+			density += spikyPow2Kernel(dist, interactionRadius);
+			nearDensity += spikyPow3Kernel(dist, interactionRadius);
+		}
+	}
+	densityBuffer[id.x] = float2(density, nearDensity);
+}
+
+[numthreads(1024, 1, 1)]
+void RelaxPositions(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= numParticles)
+		return;
+
+	float sqrRelaxRadius = relaxRadius * relaxRadius;
+	
+	float2 originPos = predictedPositionBuffer[id.x];
+	int2 originCell = getCellCoordFromPosition(originPos, interactionRadius);
+
+	uint hash = getHashFromCellPos(originCell);
+	uint key = getKeyFromHash(hash, numEntries);
+	uint currIndex = spatialOffsetBuffer[key];
+	
+	while (currIndex < numParticles)
+	{
+		uint3 indexData = spatialEntryBuffer[currIndex++];
+		if (indexData.z != key)
+			break;
+		if (indexData.y != hash)
+			continue;
+
+		uint neighborIndex = indexData.x;
+		if (neighborIndex == id.x)
+			continue;
+
+		float2 neighborPos = predictedPositionBuffer[neighborIndex];
+		float2 offset = originPos - neighborPos;
+		float distSqr = dot(offset, offset);
+		if (distSqr > sqrRelaxRadius)
+			continue;
+
+		float dist = sqrt(distSqr);
+		float q = dist / relaxRadius;
+
+		float pressure = (1.0 - q);
+		float2 direction = offset / max(EPSILON, dist);
+
+		float2 delta = pressure * direction * relaxStiffness;
+
+		predictedPositionBuffer[id.x] += delta;
+	}
+}
+
+[numthreads(1024, 1, 1)]
+void ApplyPressureForces(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= numParticles)
+		return;
+	
+	// calc pressure force
+	float2 pressureForce = float2(0.0, 0.0);
+
+	float2 originPos = predictedPositionBuffer[id.x];
+	int2 originCell = getCellCoordFromPosition(originPos, interactionRadius);
+	
+	float sqrRadius = interactionRadius * interactionRadius;
+	
+	float densityA = densityBuffer[id.x].x;
+	float pressureA = calcPressureFormDensity(densityA);
+	float nearDensityA = densityBuffer[id.x].y;
+	float nearPressureA = calcNearPressureFormDensity(nearDensityA);
+	for (int i = 0; i < 9; ++i)
+	{
+		uint hash = getHashFromCellPos(originCell + SPATIAL_OFFSETS[i]);
+		uint key = getKeyFromHash(hash, numEntries);
+		uint currIndex = spatialOffsetBuffer[key];
+		
+		while (currIndex < numParticles)
+		{
+			uint3 indexData = spatialEntryBuffer[currIndex++];
+			if (indexData.z != key)
+				break;
+			if (indexData.y != hash)
+				continue;
+			
+			uint neighborIndex = indexData.x;
+			if (neighborIndex == id.x)
+				continue;
+			
+			float2 neighborPos = predictedPositionBuffer[neighborIndex];
+			float2 offsetToNeighbor = originPos - neighborPos;
+			float sqrDistToNeighbor = dot(offsetToNeighbor, offsetToNeighbor);
+			
+			if (sqrDistToNeighbor > sqrRadius)
+				continue;
+
+			float dist = sqrt(sqrDistToNeighbor);
+
+			float densityB = densityBuffer[neighborIndex].x;
+			float pressureB = calcPressureFormDensity(densityB);
+			float nearDensityB = densityBuffer[neighborIndex].y;
+			float nearPressureB = calcNearPressureFormDensity(nearDensityB);
+
+			float pressureTerm = -(pressureA + pressureB) / (2.0 * densityB);
+			float nearPressureTerm = -(nearPressureA + nearPressureB) / (2.0 * nearDensityB);
+			pressureForce += pressureTerm * spikyPow2Gradient(offsetToNeighbor, dist, interactionRadius);
+			pressureForce += nearPressureTerm * spikyPow3Gradient(offsetToNeighbor, dist, interactionRadius);
+		}
+	}
+	pressureForce /= densityA;
+	
+	// apply pressure force
+	velocityBuffer[id.x] += pressureForce * deltaTime;
+}
+
+[numthreads(1024, 1, 1)]
+void ApplyViscocityForces(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= numParticles)
+		return;
+	
+	// calc viscosity force
+	float2 viscosityForce = float2(0.0, 0.0);
+
+	float2 originPos = predictedPositionBuffer[id.x];
+	int2 originCell = getCellCoordFromPosition(originPos, interactionRadius);
+	
+	float sqrRadius = interactionRadius * interactionRadius;
+	
+	for (int i = 0; i < 9; ++i)
+	{
+		uint hash = getHashFromCellPos(originCell + SPATIAL_OFFSETS[i]);
+		uint key = getKeyFromHash(hash, numEntries);
+		uint currIndex = spatialOffsetBuffer[key];
+		
+		while (currIndex < numParticles)
+		{
+			uint3 indexData = spatialEntryBuffer[currIndex++];
+			if (indexData.z != key)
+				break;
+			if (indexData.y != hash)
+				continue;
+			
+			uint neighborIndex = indexData.x;
+			if (neighborIndex == id.x)
+				continue;
+			
+			float2 neighborPos = predictedPositionBuffer[neighborIndex];
+			float2 offsetToNeighbor = originPos - neighborPos;
+			float sqrDistToNeighbor = dot(offsetToNeighbor, offsetToNeighbor);
+			
+			if (sqrDistToNeighbor > sqrRadius)
+				continue;
+
+			float dist = sqrt(sqrDistToNeighbor);
+			float influence = smoothingPoly6Kernel(dist, interactionRadius);
+			viscosityForce += influence * (velocityBuffer[neighborIndex] - velocityBuffer[id.x]);
+		}
+	}
+	viscosityForce *= viscosityStrength;
+	
+	// apply viscosity force
+	velocityBuffer[id.x] += viscosityForce * deltaTime;
+}
+
+[numthreads(1024, 1, 1)]
+void UpdatePositions(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= numParticles)
+		return;
+	
+	// update positions
+	float speed = length(velocityBuffer[id.x]);
+	velocityBuffer[id.x] *= min(100.0 / speed, 1.0);
+	positionBuffer[id.x] += velocityBuffer[id.x] * deltaTime;
+	
+	// handle collision
+	float2 p = positionBuffer[id.x];
+	float2 v = velocityBuffer[id.x];
+	
+	int polyStart = 0;
+	for (int polygonIdx = 0; polygonIdx < (int)numColliderPolygons; ++polygonIdx)
+	{	
+		int polyEnd = colliderPolygonOffsetBuffer[polygonIdx];
+	
+		uint windingCount = 0;
+		float minDist = 1e10;
+		float2 closestProjDir = float2(0.0, 0.0);
+		float2 closestNormal = float2(0.0, 1.0);
+		bool bInside = false;
+		for (int s = polyStart, e = polyEnd - 1; s < polyEnd; e = s++)
+		{
+			float2 a = colliderPolygonPointBuffer[s];
+			float2 b = colliderPolygonPointBuffer[e];
+			
+				// update min dist and closest normal
+			float2 ab = b - a;
+			float2 ap = p - a;
+			float t = saturate(dot(ap, ab) / dot(ab, ab));
+			float2 proj = a + ab * t;
+			float2 projDir = proj - p;
+			float dist = length(projDir);
+
+			if (dist < minDist)
+			{
+				minDist = dist;
+				closestProjDir = projDir;
+				float2 edge = normalize(b - a);
+				closestNormal = normalize(float2(-edge.y, edge.x));
+			}
+			
+				// update inside state
+			if ((a.y > p.y) != (b.y > p.y))
+			{
+				float xCross = (b.x - a.x) * (p.y - a.y) / (b.y - a.y + 1e-6) + a.x;
+				if (p.x < xCross)
+				{
+					bInside = !bInside;
+				}
+			}
+		}
+		
+		// update particle state
+		if (windingCount % 2 == 1)
+		{
+			float2 contactPoint = positionBuffer[id.x] + minDist * closestProjDir;
+			positionBuffer[id.x] = contactPoint;
+			velocityBuffer[id.x] = reflect(v, closestNormal) * collisionDamping;
+		}
+		polyStart = polyEnd;
+
+	}
+
+	// bounds condition
+	float2 boundsMin = float2(bounds.x, bounds.y);
+	float2 boundsMax = float2(bounds.z, bounds.w);
+	if (positionBuffer[id.x].x > boundsMax.x)
+	{
+		positionBuffer[id.x].x = boundsMax.x;
+		velocityBuffer[id.x].x *= -1 * collisionDamping;
+	}
+	else if (positionBuffer[id.x].x < boundsMin.x)
+	{
+		positionBuffer[id.x].x = boundsMin.x;
+		velocityBuffer[id.x].x *= -1 * collisionDamping;
+	}
+	if (positionBuffer[id.x].y > boundsMax.y)
+	{
+		positionBuffer[id.x].y = boundsMax.y;
+		velocityBuffer[id.x].y *= -1 * collisionDamping;
+	}
+	else if (positionBuffer[id.x].y < boundsMin.y)
+	{
+		positionBuffer[id.x].y = boundsMin.y;
+		velocityBuffer[id.x].y *= -1 * collisionDamping;
+	}
+}
