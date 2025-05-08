@@ -350,16 +350,17 @@ void UpdatePositions(uint3 id : SV_DispatchThreadID)
 	// handle collision
 	float2 p = positionBuffer[id.x];
 	float2 v = velocityBuffer[id.x];
+
+	float minDist = 1e10;
+	float2 closestProjDir = float2(0.0, 0.0);
+	float2 closestNormal = float2(0.0, 1.0);
 	
+	uint windingCount = 0;
 	int polyStart = 0;
 	for (int polygonIdx = 0; polygonIdx < (int)numColliderPolygons; ++polygonIdx)
 	{	
 		int polyEnd = colliderPolygonOffsetBuffer[polygonIdx];
-	
-		uint windingCount = 0;
-		float minDist = 1e10;
-		float2 closestProjDir = float2(0.0, 0.0);
-		float2 closestNormal = float2(0.0, 1.0);
+
 		bool bInside = false;
 		for (int s = polyStart, e = polyEnd - 1; s < polyEnd; e = s++)
 		{
@@ -392,16 +393,16 @@ void UpdatePositions(uint3 id : SV_DispatchThreadID)
 				}
 			}
 		}
-		
-		// update particle state
-		if (windingCount % 2 == 1)
-		{
-			float2 contactPoint = positionBuffer[id.x] + minDist * closestProjDir;
-			positionBuffer[id.x] = contactPoint;
-			velocityBuffer[id.x] = reflect(v, closestNormal) * collisionDamping;
-		}
+		windingCount += bInside ? 1 : 0;
 		polyStart = polyEnd;
+	}
 
+	// update particle state
+	if (windingCount % 2 == 1)
+	{
+		float2 contactPoint = positionBuffer[id.x] + minDist * closestProjDir;
+		positionBuffer[id.x] = contactPoint;
+		velocityBuffer[id.x] = reflect(v, closestNormal) * collisionDamping;
 	}
 
 	// bounds condition

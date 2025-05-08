@@ -20,7 +20,7 @@ namespace Linda.Fluid
 
 		public override void Initialize()
 		{
-			numEntries = getNextPow2(numParticles);
+			base.Initialize();
 
 			// init kernels
 			applyExternalForcesKernel = simulationComputeShader.FindKernel("ApplyExternalForces");
@@ -32,18 +32,6 @@ namespace Linda.Fluid
 			applyPressureForcesKernel = simulationComputeShader.FindKernel("ApplyPressureForces");
 			applyViscocityForcesKernel = simulationComputeShader.FindKernel("ApplyViscocityForces");
 			updatePositionsKernel = simulationComputeShader.FindKernel("UpdatePositions");
-
-			// init device buffers
-			devicePositionBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
-			devicePredictedPositionBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
-			deviceVelocityBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
-			deviceDensityBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
-
-			deviceSpatialEntryBuffer = new ComputeBuffer(numEntries, sizeof(uint) * 3);
-			deviceSpatialOffsetBuffer = new ComputeBuffer(numEntries, sizeof(uint));
-
-			deviceColliderPolygonPointBuffer = new ComputeBuffer(maxColliderPolygonPoints, sizeof(float) * 2);
-			deviceColliderPolygonOffsetBuffer = new ComputeBuffer(maxColliderPolygonPoints / 3, sizeof(uint));
 
 			// set compute shader buffers
 			simulationComputeShader.SetBuffer(applyExternalForcesKernel, "positionBuffer", devicePositionBuffer);
@@ -118,7 +106,9 @@ namespace Linda.Fluid
 
 		public override void Step()
 		{
-			updateConstants();
+			updateColliders();
+			updateSetting();
+			updateBuffers();
 			for (int i = 0; i < subStepCount; ++i)
 			{
 				simulationStep();
@@ -161,12 +151,11 @@ namespace Linda.Fluid
 			simulationComputeShader.Dispatch(updatePositionsKernel, Mathf.CeilToInt(numParticles / 1024f), 1, 1);
 		}
 
-		void updateConstants()
+		void updateSetting()
 		{
 			float fixedDeltaTime = 1f / 120f;
 			float predictDeltaTime = 1f / 240f;
 
-			// update constant values
 			simulationComputeShader.SetFloat("deltaTime", fixedDeltaTime);
 			simulationComputeShader.SetFloat("predictDeltaTime", predictDeltaTime);
 
@@ -181,124 +170,21 @@ namespace Linda.Fluid
 			simulationComputeShader.SetFloat("collisionDamping", collisionDamping);
 			simulationComputeShader.SetVector("gravity", new Vector2(0, -gravity));
 			simulationComputeShader.SetVector("bounds", new Vector4(-bounds.size.x, -bounds.size.y, bounds.size.x, bounds.size.y));
+		}
+
+		void updateBuffers()
+		{
+			simulationComputeShader.SetInt("numParticles", numParticles);
+			simulationComputeShader.SetInt("numEntries", numEntries);
+
+			simulationComputeShader.SetInt("numColliderPolygons", numColliderPolygons);
+			deviceColliderPolygonPointBuffer.SetData(hostColliderPolygonPointBuffer);
+			deviceColliderPolygonOffsetBuffer.SetData(hostColliderPolygonOffsetBuffer);
 
 			(var inputPosition, var interactionInputStrength) = getMouseInput();
 			simulationComputeShader.SetFloat("inputControlRadius", controlRadius);
 			simulationComputeShader.SetVector("inputPosition", inputPosition);
 			simulationComputeShader.SetFloat("inputStrength", interactionInputStrength);
-
-			simulationComputeShader.SetInt("numParticles", numParticles);
-			simulationComputeShader.SetInt("numEntries", numEntries);
-		}
-
-		public void updateColliders()
-		{
-			numColliderPolygons = 0;
-			int pointCount = 0;
-			int polygonCount = 0;
-
-			Rigidbody2D[] rigidbodies = Object.FindObjectsByType<Rigidbody2D>(FindObjectsSortMode.None);
-			foreach (var rigidbody in rigidbodies)
-			{
-				Collider2D[] colliders = rigidbody.GetComponentsInChildren<Collider2D>();
-				CompositeCollider2D composite = colliders
-					.OfType<CompositeCollider2D>()
-					.FirstOrDefault();
-				if (composite != null)
-				{
-					int pathCount = composite.pathCount;
-					numColliderPolygons += pathCount;
-					for (int i = 0; i < pathCount; i++)
-					{
-						int numPoints = composite.GetPathPointCount(i);
-						Vector2[] points = new Vector2[numPoints];
-						composite.GetPath(i, points);
-
-						for (int j = 0; j < numPoints; j++)
-						{
-							hostColliderPolygonPointBuffer[pointCount++] = points[j];
-						}
-						hostColliderPolygonOffsetBuffer[polygonCount++] = (uint)pointCount;
-					}
-				}
-				else
-				{
-					foreach (var collider in colliders)
-					{
-						if (collider is PolygonCollider2D poly)
-						{
-							numColliderPolygons += poly.pathCount;
-							for (int i = 0; i < poly.pathCount; i++)
-							{
-								Vector2[] path = poly.GetPath(i);
-
-								for (int j = 0; j < path.Length; j++)
-								{
-									hostColliderPolygonPointBuffer[pointCount++] = path[j];
-								}
-								hostColliderPolygonOffsetBuffer[polygonCount++] = (uint)pointCount;
-							}
-						}
-						else if (collider is BoxCollider2D box)
-						{
-							Vector2 size = box.size * 0.5f;
-							Vector2 offset = box.offset;
-							Vector2[] localPath = new Vector2[] {
-							offset + new Vector2( size.x, -size.y),
-							offset + new Vector2( size.x,  size.y),
-							offset + new Vector2(-size.x,  size.y),
-							offset + new Vector2(-size.x, -size.y),
-						};
-							Vector2[] path = localPath.Select(p => (Vector2)box.transform.TransformPoint(p)).ToArray();
-
-							++numColliderPolygons;
-							for (int j = 0; j < path.Length; j++)
-							{
-								hostColliderPolygonPointBuffer[pointCount++] = path[j];
-							}
-							hostColliderPolygonOffsetBuffer[polygonCount++] = (uint)pointCount;
-						}
-						else if (collider is CircleCollider2D circle)
-						{
-							int segments = 20;
-							Vector2[] localPath = new Vector2[segments];
-							for (int i = 0; i < segments; i++)
-							{
-								float angle = Mathf.Deg2Rad * 360f / segments * i;
-								localPath[i] = circle.offset + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * circle.radius;
-							}
-							Vector2[] path = localPath.Select(p => (Vector2)circle.transform.TransformPoint(p)).ToArray();
-
-							++numColliderPolygons;
-							for (int j = 0; j < path.Length; j++)
-							{
-								hostColliderPolygonPointBuffer[pointCount++] = path[j];
-							}
-							hostColliderPolygonOffsetBuffer[polygonCount++] = (uint)pointCount;
-						}
-						else if (collider is EdgeCollider2D edge)
-						{
-							Vector2[] path = edge.points;
-
-							++numColliderPolygons;
-							for (int j = 0; j < path.Length; j++)
-							{
-								hostColliderPolygonPointBuffer[pointCount++] = path[j];
-							}
-							hostColliderPolygonOffsetBuffer[polygonCount++] = (uint)pointCount;
-						}
-						else
-						{
-							Debug.Assert(false, "Invalide collider type");
-						}
-					}
-				}
-			}
-
-			// update compute buffers
-			simulationComputeShader.SetInt("numColliderPolygons", numColliderPolygons);
-			deviceColliderPolygonPointBuffer.SetData(hostColliderPolygonPointBuffer);
-			deviceColliderPolygonOffsetBuffer.SetData(hostColliderPolygonOffsetBuffer);
 		}
 
 		(Vector2, float) getMouseInput()
