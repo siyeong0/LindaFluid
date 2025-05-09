@@ -5,6 +5,36 @@ namespace Linda.Fluid
 {
 	public class SPHSolver : ISimulation
 	{
+		[Header("Simulation")]
+		public float interactionRadius = 0.25f;
+		public float targetDensity = 200f;
+		public float pressureStiffness = 150f;
+		public float nearPressureStiffness = 10f;
+		public float viscosityStrength = 0.075f;
+		public float relaxPositionRadius = 0.1f;
+		public float relaxPositionStiffness = 0.01f;
+		[Range(0, 1)] public float collisionDamping = 0.2f;
+		public float gravity = 9f;
+		public uint subStepCount = 4;
+		public Bounds bounds;
+
+		[Header("Input Interaction")]
+		public float controlRadius = 3f;
+		public float controlStregth = 35f;
+
+		// compute buffers
+		[HideInInspector] public ComputeBuffer devicePredictedPositionBuffer;
+		[HideInInspector] public ComputeBuffer deviceDensityBuffer;
+
+		[HideInInspector] public ComputeBuffer deviceSpatialEntryBuffer;
+		[HideInInspector] public ComputeBuffer deviceSpatialOffsetBuffer;
+
+		[HideInInspector] public ComputeBuffer deviceColliderPolygonPointBuffer;
+		[HideInInspector] public ComputeBuffer deviceColliderPolygonOffsetBuffer;
+
+		// spatial grid
+		protected int numEntries;
+
 		// compute shader kernels
 		int applyExternalForcesKernel;
 		int updateSpatialEntriesKernel;
@@ -16,12 +46,11 @@ namespace Linda.Fluid
 		int applyViscocityForcesKernel;
 		int updatePositionsKernel;
 
-		// compute buffer
-		 ComputeBuffer deviceDensityBuffer;
-
 		public override void Initialize()
 		{
 			base.Initialize();
+
+			numEntries = getNextPow2(numParticles);
 
 			// init kernels
 			applyExternalForcesKernel = simulationComputeShader.FindKernel("ApplyExternalForces");
@@ -34,8 +63,15 @@ namespace Linda.Fluid
 			applyViscocityForcesKernel = simulationComputeShader.FindKernel("ApplyViscocityForces");
 			updatePositionsKernel = simulationComputeShader.FindKernel("UpdatePositions");
 
-			// init compute buffers
+			// init device buffers
+			devicePredictedPositionBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
 			deviceDensityBuffer = new ComputeBuffer(numParticles, sizeof(float) * 2);
+
+			deviceSpatialEntryBuffer = new ComputeBuffer(numEntries, sizeof(uint) * 3);
+			deviceSpatialOffsetBuffer = new ComputeBuffer(numEntries, sizeof(uint));
+
+			deviceColliderPolygonPointBuffer = new ComputeBuffer(maxColliderPolygonPoints, sizeof(float) * 2);
+			deviceColliderPolygonOffsetBuffer = new ComputeBuffer(maxColliderPolygonPoints / 3, sizeof(uint));
 
 			// set compute shader buffers
 			simulationComputeShader.SetBuffer(applyExternalForcesKernel, "positionBuffer", devicePositionBuffer);
@@ -121,14 +157,11 @@ namespace Linda.Fluid
 
 		public override void CleanUp()
 		{
-			devicePositionBuffer?.Release();
-			deviceVelocityBuffer?.Release();
+			base.CleanUp();
 			devicePredictedPositionBuffer?.Release();
 			deviceDensityBuffer?.Release();
-
 			deviceSpatialEntryBuffer?.Release();
 			deviceSpatialOffsetBuffer?.Release();
-
 			deviceColliderPolygonPointBuffer?.Release();
 			deviceColliderPolygonOffsetBuffer?.Release();
 		}
