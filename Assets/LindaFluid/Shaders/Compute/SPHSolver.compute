@@ -151,7 +151,7 @@ void UpdateDensities(uint3 id : SV_DispatchThreadID)
 	float nearDensity = 0.0;
 	for (int i = 0; i < 9; ++i)
 	{
-		uint hash = getHashFromCellPos(originCell + SPATIAL_OFFSETS[i]);
+		uint hash = getHashFromCellPos(originCell + SPATIAL_OFFSETS_9[i]);
 		uint key = getKeyFromHash(hash, numEntries);
 		uint currIndex = spatialOffsetBuffer[key];
 		
@@ -244,7 +244,7 @@ void ApplyPressureForces(uint3 id : SV_DispatchThreadID)
 	float nearPressureA = calcNearPressureFormDensity(nearDensityA);
 	for (int i = 0; i < 9; ++i)
 	{
-		uint hash = getHashFromCellPos(originCell + SPATIAL_OFFSETS[i]);
+		uint hash = getHashFromCellPos(originCell + SPATIAL_OFFSETS_9[i]);
 		uint key = getKeyFromHash(hash, numEntries);
 		uint currIndex = spatialOffsetBuffer[key];
 		
@@ -302,7 +302,7 @@ void ApplyViscocityForces(uint3 id : SV_DispatchThreadID)
 	
 	for (int i = 0; i < 9; ++i)
 	{
-		uint hash = getHashFromCellPos(originCell + SPATIAL_OFFSETS[i]);
+		uint hash = getHashFromCellPos(originCell + SPATIAL_OFFSETS_9[i]);
 		uint key = getKeyFromHash(hash, numEntries);
 		uint currIndex = spatialOffsetBuffer[key];
 		

@@ -214,7 +214,10 @@ MonoBehaviour:
         numParticles: 20000
         spacing: 0.01
         initOffset: {x: 0, y: 0}
-        interactionRadius: 0.25
+        cellSize: 0.25
+        bounds:
+          m_Center: {x: 0, y: 0, z: 0}
+          m_Extent: {x: 4.4, y: 2.5, z: 0}
         targetDensity: 200
         pressureStiffness: 150
         nearPressureStiffness: 10
@@ -224,9 +227,6 @@ MonoBehaviour:
         collisionDamping: 0.2
         gravity: 9
         subStepCount: 4
-        bounds:
-          m_Center: {x: 0, y: 0, z: 0}
-          m_Extent: {x: 0, y: 0, z: 0}
         controlRadius: 3
         controlStregth: 35
 --- !u!1 &1524994657

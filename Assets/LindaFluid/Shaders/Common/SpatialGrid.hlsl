@@ -1,7 +1,16 @@
 ﻿#ifndef SPATIAL_GRID_INCLUDE
 #define SPATIAL_GRID_INCLUDE
 
-static const int2 SPATIAL_OFFSETS[9] =
+static const int2 SPATIAL_OFFSETS_5[5] =
+{
+	int2(0, 1),
+	int2(-1, 0),
+	int2(0, 0),
+	int2(1, 0),
+	int2(0, -1),
+};
+
+static const int2 SPATIAL_OFFSETS_9[9] =
 {
 	int2(-1, 1),
 	int2(0, 1),
